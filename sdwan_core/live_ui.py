@@ -15,6 +15,21 @@ from collections import deque
 
 from . import endpoints
 
+
+def any_charset() -> None:
+    """Work on every computer, whatever its language / character set (Windows code pages, macOS, Linux).
+
+    Console: a message character the console can't show (e.g. '–' on a cp437/cp932 console) is replaced
+    instead of crashing. Files and the collection zip are always written as UTF-8 / ASCII-escaped JSON, so
+    names like 'Müller', '日本' or 'São Paulo' survive unchanged on any system.
+    """
+    import sys
+    for s in (sys.stdout, sys.stderr):
+        try:
+            s.reconfigure(errors="replace")
+        except (AttributeError, ValueError):  # not a normal console (e.g. redirected / IDE)
+            pass
+
 LOCK = threading.Lock()
 
 # ---- what is being collected: key -> (category, API path) --------------------------------------
@@ -32,6 +47,13 @@ FIXED_START, FIXED_END = 4.0, 3.0
 # Collector / tool release history, newest first. Bump collector_app/VERSION to CHANGELOG[0][0] whenever
 # a collection data set is added (tests enforce that endpoints.collection_count() and the version stay in step).
 CHANGELOG: list[tuple[str, str, int, list[str]]] = [  # (version, date, endpoint count, what's new)
+    ("1.5.2", "2026-11-13", 94, [
+        "Works in any system language or character set (Windows code pages, macOS, Linux): non-Latin and accented "
+        "names are kept exactly; console messages never crash on symbols the console can't show.",
+        "Windows, macOS and Linux: Windows starter for the tool (powerswitch.bat), UTF-8 on Windows for tool and collector, "
+        "PDF reports find Chrome/Edge on Windows.",
+        "Tool: checks the Cisco vulnerability API at start-up (VPN hint, Recheck connection, Update vulnerability database); "
+        "your openVuln API key can be saved encrypted in the computer's password safe, with step-by-step instructions."]),
     ("1.5.1", "2026-11-13", 94, [
         "Faster and more reliable: running configurations are read in their own lane, 2 at a time (the Manager serves "
         "them one by one), while everything else continues. No more timeouts on larger fabrics; ~20% faster on 40 routers.",

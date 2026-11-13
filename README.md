@@ -15,6 +15,10 @@ for the Cisco SD-WAN assessment (`sdwan-assessor`). Run it at the customer site,
 - HTTPS access from this computer to the SD-WAN Manager (port 443 or the custom port).
 - Internet access on the first run only, to install the single package `requests`. Behind a proxy, set
   `HTTPS_PROXY` first (see Troubleshooting).
+- **Any language or character set.** Works on Windows, macOS and Linux in any system language (English,
+  German, French, Japanese, Chinese, Arabic …). Names with accents or non-Latin letters in hostnames, sites,
+  descriptions or the customer name are kept exactly. You don't need to change any language, region or
+  "code page" setting.
 
 ---
 
@@ -85,6 +89,7 @@ network without TLS, so it isn't recommended.
 | `Manager is busy (HTTP 503)` | Wait a few minutes and try again, or use `--workers 5`. |
 | `TLS certificate not trusted` | Use `--ca-bundle your-ca.pem`. Or leave out `--verify-tls` / keep "Skip TLS certificate check" ticked. |
 | `pip install failed` | Set your proxy first: Linux `export HTTPS_PROXY=http://proxy:8080`, Windows `set HTTPS_PROXY=http://proxy:8080`. |
+| Strange symbols (e.g. `?` or boxes) in the terminal | Display only – some consoles can't show every symbol. The collection and the zip file are not affected. |
 | Python not found | Install Python 3.9+ and re-open the terminal (Windows: tick "Add to PATH"). |
 
 ## What is collected

@@ -135,6 +135,7 @@ def worker(jid, url, user, pw, customer, verify, max_edges, workers):
 
 
 def main():
+    live_ui.any_charset()
     import logging
     logging.basicConfig(level=logging.ERROR, format="%(message)s")
     ap = argparse.ArgumentParser(description="SD-WAN collector web page")

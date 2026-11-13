@@ -26,7 +26,7 @@ except ImportError:  # running inside the assessor repo during development
     from sdwan_assessor import bundle, collector, endpoints, live_ui  # type: ignore
 
 HERE = Path(__file__).resolve().parent
-VERSION = (HERE / "VERSION").read_text().strip() if (HERE / "VERSION").exists() else "dev"
+VERSION = (HERE / "VERSION").read_text(encoding="utf-8").strip() if (HERE / "VERSION").exists() else "dev"
 OUT_DIR = HERE / "output"
 
 
@@ -55,6 +55,7 @@ def run_collection(url: str, username: str, password: str, customer: str, verify
 
 
 def main() -> int:
+    live_ui.any_charset()
     logging.basicConfig(level=logging.ERROR, format="%(message)s")  # keep the console clean for end users
     ap = argparse.ArgumentParser(description="Read-only SD-WAN data collector for the SD-WAN assessor.")
     ap.add_argument("--url", "--host", dest="url", required=True, help="SD-WAN Manager name or IP (https is implied)")

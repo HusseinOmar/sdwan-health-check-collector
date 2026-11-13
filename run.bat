@@ -3,6 +3,7 @@ REM SD-WAN Collector launcher (Windows).
 REM   run.bat                -> web page (http://127.0.0.1:5050)
 REM   run.bat cli --url https://vmanage.example.com -u USER --customer "ACME"   -> command line
 setlocal
+set PYTHONUTF8=1
 cd /d "%~dp0"
 set "PY="
 where py >nul 2>nul && set "PY=py -3"

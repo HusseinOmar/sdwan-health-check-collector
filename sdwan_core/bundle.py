@@ -136,7 +136,7 @@ def extract_bundle(zip_path: Path, runs_dir: Path) -> Path:
                     data = json.loads(z.read(name))
                 except ValueError:
                     continue  # skip a damaged file; the check that needs it becomes N/A
-                (dest / "raw" / Path(name).name).write_text(json.dumps(redact(data), indent=1))
+                (dest / "raw" / Path(name).name).write_text(json.dumps(redact(data), indent=1), encoding="utf-8")
     m["imported_from"] = Path(zip_path).name
-    (dest / "manifest.json").write_text(json.dumps(m, indent=1))
+    (dest / "manifest.json").write_text(json.dumps(m, indent=1), encoding="utf-8")
     return dest
