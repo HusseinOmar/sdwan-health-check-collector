@@ -20,11 +20,23 @@ LOCK = threading.Lock()
 # ---- what is being collected: key -> (category, API path) --------------------------------------
 COLLECTOR_PHASES = ["Secure login", "Fabric-wide data", "Per-device data", "Templates", "Packaging"]
 ASSESSOR_PHASES = ["Secure login", "Fabric-wide data", "Per-device data", "Templates", "Checks & scoring"]
-SPAN = [(0, 3), (3, 35), (35, 85), (85, 95), (95, 100)]  # share of the overall ring per phase (start %, end %)
+# Progress = expected seconds of work done / planned. Running configs are served one at a time by the Manager
+# (~3.5 s each); other calls run ~20 in parallel (~0.1 s each of wall time). Login and packaging are fixed costs.
+# "light" = template / configuration-group reads (~0.015 s each in parallel). "provisional" = placeholder for the
+# per-device and template stages until their real size is known (avoids an early jump to a high percentage).
+WEIGHT = {"slow": 3.5, "fast": 0.1, "light": 0.02, "provisional": 120.0}
+SLOW_LABELS = {"running_config"}
+LIGHT_LABELS = {"device_template_objects", "config_group_devices", "feature_profiles", "feature_parcels"}
+FIXED_START, FIXED_END = 4.0, 3.0
 
 # Collector / tool release history, newest first. Bump collector_app/VERSION to CHANGELOG[0][0] whenever
 # a collection data set is added (tests enforce that endpoints.collection_count() and the version stay in step).
 CHANGELOG: list[tuple[str, str, int, list[str]]] = [  # (version, date, endpoint count, what's new)
+    ("1.5.1", "2026-11-13", 94, [
+        "Faster and more reliable: running configurations are read in their own lane, 2 at a time (the Manager serves "
+        "them one by one), while everything else continues. No more timeouts on larger fabrics; ~20% faster on 40 routers.",
+        "Honest progress: the percentage follows the expected time of the remaining work instead of jumping to 85% "
+        "and waiting; better time-remaining estimate."]),
     ("1.5.0", "2026-11-13", 94, [
         "Configuration groups in depth: devices per group (System IP, hostname, site), every feature profile with its "
         "features and settings (fixed / variable / default), CLI add-on text (/v1/config-group/{id}/device/associate, "
@@ -108,13 +120,27 @@ def new_job(phases: list[str] = COLLECTOR_PHASES, **extra) -> dict:
     now = time.monotonic()
     return {"log": [], "pct": 0, "state": "running", "error": "", "phase": 0, "phases": list(phases),
             "done": 0, "total": 0, "calls": 0, "t0": now, "pt0": now, "current": "", "feed": deque(maxlen=12),
-            "cats": dict.fromkeys(CATEGORIES, 0), "t_end": None, **extra}
+            "cats": dict.fromkeys(CATEGORIES, 0), "t_end": None,
+            "wt_total": FIXED_START + FIXED_END, "wt_done": 0.0, **extra}
+
+
+def expect(j: dict, counts: dict) -> None:
+    """Announce upcoming work ({"slow": n, "fast": n}; negative corrects an earlier estimate)."""
+    with LOCK:
+        j["wt_total"] += sum(WEIGHT[k] * n for k, n in counts.items() if k in WEIGHT)
+        j["wt_total"] = max(j["wt_total"], j["wt_done"] + FIXED_END)
+
+
+def _pct(j: dict) -> None:
+    j["pct"] = max(j["pct"], min(99, int(100 * j["wt_done"] / max(j["wt_total"], 1e-9))))
 
 
 def _set_phase(j: dict, ph: int) -> None:
     if ph != j["phase"]:
         j["phase"], j["done"], j["total"], j["pt0"], j["current"] = ph, 0, 0, time.monotonic(), ""
-    j["pct"] = max(j["pct"], SPAN[ph][0])
+    if ph >= 1 and not j.get("_login_done"):  # login finished
+        j["_login_done"], j["wt_done"] = True, j["wt_done"] + FIXED_START
+    _pct(j)
 
 
 def hooks(j: dict):
@@ -136,8 +162,10 @@ def hooks(j: dict):
             j["cats"][cat] = j["cats"].get(cat, 0) + 1
             j["current"] = f"{text}  {path}".strip()
             j["feed"].appendleft((cat, text, path))
-            lo, hi = SPAN[j["phase"]]
-            j["pct"] = max(j["pct"], int(lo + (hi - lo) * i / max(n, 1)))
+            head = key.partition(" ")[0]
+            j["wt_done"] += WEIGHT["slow" if head in SLOW_LABELS else "light" if head in LIGHT_LABELS else "fast"]
+            j["wt_total"] = max(j["wt_total"], j["wt_done"] + FIXED_END)  # unplanned calls (e.g. bulk fallback)
+            _pct(j)
             if i == n or i % 25 == 0:
                 j["log"].append(f"  {i}/{n} {key}")
     return log, progress
@@ -156,8 +184,8 @@ def status(j: dict) -> dict:
     with LOCK:
         now = j["t_end"] or time.monotonic()
         el, pel = now - j["t0"], now - j["pt0"]
-        rate = j["done"] / pel if pel > 0 and j["done"] else 0
-        eta = (j["total"] - j["done"]) / rate if rate and j["total"] else None
+        rate = j["wt_done"] / el if el > 3 and j["wt_done"] else 0  # planned seconds of work per real second
+        eta = max(0.0, j["wt_total"] - j["wt_done"]) / rate if rate and j["state"] == "running" else None
         return {"state": j["state"], "pct": j["pct"], "phase": j["phase"], "phases": j["phases"], "done": j["done"],
                 "total": j["total"], "calls": j["calls"], "rate": round(j["calls"] / el, 1) if el > 0 else 0,
                 "elapsed": round(el), "eta": None if eta is None else round(eta), "current": j["current"],

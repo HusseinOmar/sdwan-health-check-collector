@@ -120,7 +120,8 @@ def worker(jid, url, user, pw, customer, verify, max_edges, workers):
     j = JOBS[jid]
     log, progress = live_ui.hooks(j)
     try:
-        path = run_collection(url, user, pw, customer, verify, None, max_edges, workers, progress, log)
+        path = run_collection(url, user, pw, customer, verify, None, max_edges, workers, progress, log,
+                              lambda n: live_ui.expect(j, n))
         live_ui.finish(j, "done", file=str(path))
     except collector.LoginError as e:
         live_ui.finish(j, "failed", f"Login failed: {e}")

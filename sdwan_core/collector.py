@@ -19,6 +19,9 @@ import urllib3
 
 log = logging.getLogger(__name__)
 _SAFE_ID = re.compile(r"[A-Za-z0-9_.:-]+")
+# Data the Manager serves one request at a time (live running configs, ~3.5 s each): own lane, this many in flight.
+# Measured on a 26.x Manager: 20 configs took ~70 s with 1, 5 or 20 parallel requests; 20 at once caused timeouts.
+SLOW_LANE = {"running_config": 2}
 
 
 class ReadOnlyViolation(RuntimeError):
@@ -139,12 +142,14 @@ class Collector:
             log.info("%s %s %s", "OK " if r.ok else "ERR", r.status, r.path)
         return res
 
-    def _parallel(self, jobs, fn, progress=None, label=lambda j: str(j)):
+    def _parallel(self, jobs, fn, progress=None, label=lambda j: str(j), workers: int | None = None):
         """Run fn(job) for every job on `workers` threads; results keep the job order."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
         out = [None] * len(jobs)
         done = 0
-        with ThreadPoolExecutor(max_workers=self.workers) as ex:
+        if not jobs:
+            return out
+        with ThreadPoolExecutor(max_workers=workers or self.workers) as ex:
             futs = {ex.submit(fn, j): i for i, j in enumerate(jobs)}
             for f in as_completed(futs):
                 i = futs[f]
@@ -196,6 +201,22 @@ class Collector:
             start = nxt
         return EndpointResult(key, f"bulk:{state_type}", True, 200, time.monotonic() - t0, data=rows)
 
+    def plan_per_device(self, devices: list[dict], per_device, max_edges: int = 100, bulk=None) -> dict[str, int]:
+        """Expected number of calls for collect_per_device: {"slow": n, "fast": n} (bulk counted as fast)."""
+        bulk = bulk or {}
+        ctrl = sum(d.get("personality") in ("vsmart", "vbond", "vmanage") for d in devices)
+        edges = min(max_edges, sum(d.get("personality") == "vedge" and d.get("reachability") == "reachable" for d in devices))
+        size = {"controllers": ctrl, "edges": edges, "all": ctrl + edges}
+        slow = fast = 0
+        for k, _c, _t, sc in per_device:
+            if k in bulk:
+                fast += len(bulk[k][0])
+            elif k in SLOW_LANE:
+                slow += size[sc]
+            else:
+                fast += size[sc]
+        return {"slow": slow, "fast": fast}
+
     def collect_per_device(
         self,
         devices: list[dict],
@@ -203,8 +224,13 @@ class Collector:
         max_edges: int = 100,
         progress: Callable[[int, int, str], None] | None = None,
         bulk: dict[str, tuple[list[str], list[str]]] | None = None,
-    ) -> list[EndpointResult]:
+        wait: bool = True,
+    ):
         """One aggregated result per key: data = {"per_device": {host-name: {"data": rows}}}.
+
+        Keys in SLOW_LANE (running configs: the Manager serves them one at a time) run on their own small
+        thread pool, in the background, so they never queue past the timeout and the rest keeps going.
+        wait=False returns a function that waits for that lane and then returns the results.
 
         Keys listed in `bulk` are fetched with the bulk state API (all devices, few calls);
         if bulk fails for a key, it falls back to one call per device.
@@ -258,21 +284,68 @@ class Collector:
                     break
             return r
 
+        import threading
+        label = lambda j: f"{j[0]} {j[2].get('host-name')}"
+        slow = [j for j in jobs if j[0] in SLOW_LANE]
+        fast = [j for j in jobs if j[0] not in SLOW_LANE]
         t0 = time.monotonic()
-        results = self._parallel(jobs, one, progress, lambda j: f"{j[0]} {j[2].get('host-name')}")
-        agg2: dict[str, dict] = {}
-        errs: dict[str, list[str]] = {}
-        for (key, _t, d), r in zip(jobs, results):
-            if r.ok:
-                agg2.setdefault(key, {})[d.get("host-name") or d.get("system-ip")] = r.data
-            else:
-                errs.setdefault(key, []).append(f"{d.get('host-name')}: {r.status}")
-        dt = time.monotonic() - t0
-        for key, _c, tmpl, sc in per_device:
-            if key in out:
-                continue
-            ok = bool(agg2.get(key)) or not scopes[sc]
-            out[key] = EndpointResult(key, tmpl, ok, 200 if ok else None, dt,
-                                      data={"per_device": agg2.get(key, {}), "sampled_edges": len(edges)} if ok else None,
-                                      error="; ".join(errs.get(key, []))[:200] or None)
-        return [out[k] for k, *_ in per_device]
+        slow_out: list = []
+        lane = threading.Thread(target=lambda: slow_out.extend(
+            self._parallel(slow, one, progress, label, workers=max(SLOW_LANE.values(), default=1))), daemon=True)
+        lane.start()
+        fast_res = self._parallel(fast, one, progress, label)
+
+        def finish() -> list[EndpointResult]:
+            lane.join()
+            by_job = dict(zip(map(id, fast), fast_res)) | dict(zip(map(id, slow), slow_out))
+            return _assemble([by_job[id(j)] for j in jobs])
+
+        def _assemble(results):
+            agg2: dict[str, dict] = {}
+            errs: dict[str, list[str]] = {}
+            for (key, _t, d), r in zip(jobs, results):
+                if r.ok:
+                    agg2.setdefault(key, {})[d.get("host-name") or d.get("system-ip")] = r.data
+                else:
+                    errs.setdefault(key, []).append(f"{d.get('host-name')}: {r.status}")
+            dt = time.monotonic() - t0
+            for key, _c, tmpl, sc in per_device:
+                if key in out:
+                    continue
+                ok = bool(agg2.get(key)) or not scopes[sc]
+                out[key] = EndpointResult(key, tmpl, ok, 200 if ok else None, dt,
+                                          data={"per_device": agg2.get(key, {}), "sampled_edges": len(edges)} if ok else None,
+                                          error="; ".join(errs.get(key, []))[:200] or None)
+            return [out[k] for k, *_ in per_device]
+
+        return finish() if wait else finish
+
+
+def collect_all(c: "Collector", max_edges: int = 100, progress=None, log=None, expect=None) -> list[EndpointResult]:
+    """Everything after login, in one place for the tool and the standalone collector.
+
+    log(text) narrates the steps; expect({"slow": n, "fast": n}) announces upcoming work so a progress
+    display can show an honest percentage. Running configs run in their own lane while the rest continues.
+    """
+    from . import endpoints as E
+    say, plan = log or (lambda m: None), expect or (lambda counts: None)
+    plan({"fast": len(E.ENDPOINTS), "provisional": 1})  # before the first message, so login isn't counted against an empty plan
+    say("Logged in. Collecting fabric-wide data…")
+    res = c.collect(E.ENDPOINTS, progress)
+    devs = next((r.data.get("data", []) for r in res if r.key == "devices" and r.ok), [])
+    ids = E.template_ids(res)
+    jobs = E.config_group_jobs(res)
+    plan({**c.plan_per_device(devs, E.PER_DEVICE, max_edges, E.BULK), "provisional": -1})
+    n_groups, n_profiles = len(jobs[0][1]), len(jobs[1][1])
+    plan({"light": len(ids) * len(E.PER_TEMPLATE) + n_groups + 2 * n_profiles})  # features estimated = profiles; corrected below
+    say(f"{len(devs)} devices found. Collecting per-device data (running configs in their own lane)…")
+    pending = c.collect_per_device(devs, E.PER_DEVICE, max_edges, progress, bulk=E.BULK, wait=False)
+    say(f"Reading {len(ids)} device templates, {len(jobs[0][1])} configuration groups and {len(jobs[1][1])} feature profiles…")
+    res += [c.collect_per_id(k, t, ids, progress) for k, t in E.PER_TEMPLATE]
+    res += [c.collect_paths(k, p, progress) for k, p in jobs]
+    parcels = E.parcel_jobs(res)
+    plan({"light": len(parcels) - n_profiles})  # replace the estimate with the real number
+    res.append(c.collect_paths("feature_parcels", parcels, progress))
+    say("Waiting for the remaining running configurations…")
+    res += pending()
+    return res

@@ -32,7 +32,7 @@ OUT_DIR = HERE / "output"
 
 def run_collection(url: str, username: str, password: str, customer: str, verify_tls: bool = True,
                    ca_bundle: str | None = None, max_edges: int = 100, workers: int = 20,
-                   progress=None, log=None) -> Path:
+                   progress=None, log=None, expect=None) -> Path:
     """Login once, collect everything, write the bundle zip, log out. Returns the zip path."""
     say = log or (lambda m: None)
     c = collector.Collector(url, username, password, verify_tls=verify_tls, workers=workers)
@@ -43,18 +43,7 @@ def run_collection(url: str, username: str, password: str, customer: str, verify
     try:
         say("Logging in…")
         c.login()
-        say("Logged in. Collecting fabric-wide data…")
-        res = c.collect(endpoints.ENDPOINTS, progress)
-        devs = next((r.data.get("data", []) for r in res if r.key == "devices" and r.ok), [])
-        say(f"{len(devs)} devices found. Collecting per-device data…")
-        res += c.collect_per_device(devs, endpoints.PER_DEVICE, max_edges, progress, bulk=endpoints.BULK)
-        ids = endpoints.template_ids(res)
-        say(f"Reading {len(ids)} device templates…")
-        res += [c.collect_per_id(k, t, ids, progress) for k, t in endpoints.PER_TEMPLATE]
-        jobs = endpoints.config_group_jobs(res)
-        say(f"Reading {len(jobs[0][1])} configuration groups and {len(jobs[1][1])} feature profiles…")
-        res += [c.collect_paths(k, p, progress) for k, p in jobs]
-        res.append(c.collect_paths("feature_parcels", endpoints.parcel_jobs(res), progress))
+        res = collector.collect_all(c, max_edges, progress, say, expect)
     finally:
         c.logout()
     ok = sum(r.ok for r in res)
