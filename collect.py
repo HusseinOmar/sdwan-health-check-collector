@@ -51,6 +51,10 @@ def run_collection(url: str, username: str, password: str, customer: str, verify
         ids = endpoints.template_ids(res)
         say(f"Reading {len(ids)} device templates…")
         res += [c.collect_per_id(k, t, ids, progress) for k, t in endpoints.PER_TEMPLATE]
+        jobs = endpoints.config_group_jobs(res)
+        say(f"Reading {len(jobs[0][1])} configuration groups and {len(jobs[1][1])} feature profiles…")
+        res += [c.collect_paths(k, p, progress) for k, p in jobs]
+        res.append(c.collect_paths("feature_parcels", endpoints.parcel_jobs(res), progress))
     finally:
         c.logout()
     ok = sum(r.ok for r in res)

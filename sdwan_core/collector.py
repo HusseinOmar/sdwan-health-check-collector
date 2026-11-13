@@ -154,6 +154,19 @@ class Collector:
                     progress(done, len(jobs), label(jobs[i]))
         return out
 
+    def collect_paths(self, key: str, paths: dict[str, str],
+                      progress: Callable[[int, int, str], None] | None = None) -> EndpointResult:
+        """One GET per id with its own path ({id: path}); data = {"per_id": {id: body}}. Unsafe ids are skipped."""
+        items = [(i, p) for i, p in paths.items() if i and _SAFE_ID.fullmatch(str(i)) and p.startswith("/dataservice/")]
+        t0 = time.monotonic()
+        res = self._parallel(items, lambda ip: self.get(key, ip[1]), progress, lambda ip: f"{key} {ip[0]}")
+        got = {i: r.data for (i, _), r in zip(items, res) if r.ok}
+        errs = [f"{i}: {r.status}" for (i, _), r in zip(items, res) if not r.ok]
+        ok = bool(got) or not items
+        return EndpointResult(key, "per-id paths", ok, 200 if ok else None, time.monotonic() - t0,
+                              data={"per_id": got, "requested": len(items)} if ok else None,
+                              error=(f"{len(errs)}/{len(items)} not read: " + "; ".join(errs))[:200] if errs else None)
+
     def collect_per_id(self, key: str, tmpl: str, ids: list[str],
                        progress: Callable[[int, int, str], None] | None = None) -> EndpointResult:
         """One GET per id (tmpl has {id}); data = {"per_id": {id: body}}. One failure is recorded, not fatal."""

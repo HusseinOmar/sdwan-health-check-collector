@@ -97,6 +97,7 @@ PER_DEVICE: list[tuple[str, str, str, str]] = [
 ]
 
 import json as _json
+import re
 from urllib.parse import quote as _q
 
 
@@ -142,6 +143,9 @@ ENDPOINTS += [
 ENDPOINTS += [
     ("licensing", "lifecycle", "/dataservice/msla/monitoring/licensedDeviceCount"),
     ("smart_licensing", "lifecycle", "/dataservice/smartLicensing/getUserSettings"),
+    ("license_devices", "lifecycle", "/dataservice/msla/devices"),
+    ("license_pools", "lifecycle", "/dataservice/msla/licenses"),
+    ("license_distribution", "lifecycle", "/dataservice/msla/monitoring/licensedDistributionDetails"),
     ("auditlog", "security", "/dataservice/auditlog?query=" + _q(_json.dumps({"query": {"condition": "AND", "rules": [
         {"value": ["7"], "field": "entry_time", "type": "date", "operator": "last_n_days"}]}, "size": 5000}))),
     ("sig_tunnels", "security", "/dataservice/device/sig/getSigTunnelList"),
@@ -165,6 +169,57 @@ BULK.update({
 PER_TEMPLATE: list[tuple[str, str]] = [
     ("device_template_objects", "/dataservice/template/device/object/{id}"),
 ]
+
+# Per configuration group: attached devices; per unique feature profile: its features (parcels) with settings.
+# The shared policy-object profile is skipped (thousands of objects; listed with its count only).
+CG_SKIP_PROFILE_TYPES = {"policy-object"}
+_TYPE_OK = re.compile(r"[a-z][a-z-]{0,40}")
+_ID_OK = re.compile(r"[A-Za-z0-9_.:-]{1,80}")
+
+
+def config_group_jobs(results) -> list[tuple[str, dict[str, str]]]:
+    """[(key, {id: GET path})] for config-group devices and feature-profile details, from 'config_groups'."""
+    r = next((r for r in results if r.key == "config_groups" and r.ok), None)
+    rows = ((r.data.get("data") if isinstance(r.data, dict) else r.data) or []) if r else []
+    groups = [g for g in rows if isinstance(g, dict) and _ID_OK.fullmatch(str(g.get("id") or "")) and ".." not in str(g["id"])]
+    devs = {g["id"]: f"/dataservice/v1/config-group/{g['id']}/device/associate" for g in groups}
+    profs = {}
+    for g in groups:
+        for p in g.get("profiles") or []:
+            t, sol = str(p.get("type") or ""), str(p.get("solution") or g.get("solution") or "sdwan")
+            if _ID_OK.fullmatch(str(p.get("id") or "")) and ".." not in str(p["id"]) and _TYPE_OK.fullmatch(t) and _TYPE_OK.fullmatch(sol) and t not in CG_SKIP_PROFILE_TYPES:
+                profs[p["id"]] = f"/dataservice/v1/feature-profile/{sol}/{t}/{p['id']}?details=true"
+    return [("config_group_devices", devs), ("feature_profiles", profs)]
+
+
+# Keys collected per id outside ENDPOINTS (config groups); counted by collection_count().
+PER_ID_KEYS = ["config_group_devices", "feature_profiles", "feature_parcels"]
+
+
+def collection_count() -> int:
+    """Number of distinct data sets the collector reads; a change means a new collector version (see live_ui.CHANGELOG)."""
+    return len(ENDPOINTS) + len(PER_DEVICE) + len(PER_TEMPLATE) + len(PER_ID_KEYS)
+
+
+_PARCEL_OK = re.compile(r"[a-z0-9][a-z0-9/-]{0,60}")
+
+
+def parcel_jobs(results) -> dict[str, str]:
+    """{parcel id: GET path} for features whose settings were not included in the profile details."""
+    r = next((r for r in results if r.key == "feature_profiles" and r.ok), None)
+    out = {}
+    for pid, body in ((r.data or {}).get("per_id") or {}).items() if r else []:
+        if not isinstance(body, dict):
+            continue
+        sol, typ = str(body.get("solution") or "sdwan"), str(body.get("profileType") or "")
+        for x in body.get("associatedProfileParcels") or []:
+            pt, xid = str(x.get("parcelType") or ""), x.get("parcelId")
+            if xid and _ID_OK.fullmatch(str(xid)) and ".." not in str(xid) and _ID_OK.fullmatch(str(pid)) and not (x.get("payload") or {}).get("data") and _TYPE_OK.fullmatch(sol) and _TYPE_OK.fullmatch(typ) \
+                    and _PARCEL_OK.fullmatch(pt) and ".." not in pt:
+                if sol == "sd-routing":  # SD-Routing features are typed "ntp-sd-routing" but addressed as ".../ntp/{id}"
+                    pt = pt.removesuffix("-sd-routing")
+                out[xid] = f"/dataservice/v1/feature-profile/{sol}/{typ}/{pid}/{pt}/{xid}"
+    return out
 
 
 def template_ids(results) -> list[str]:

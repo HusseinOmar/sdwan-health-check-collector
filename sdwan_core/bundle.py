@@ -19,7 +19,7 @@ from pathlib import Path
 from .redact import redact
 
 FORMAT = "sdwan-assessor-collection"
-SCHEMA = 2  # 2: adds device_template_objects
+SCHEMA = 3  # 2: adds device_template_objects; 3: adds licence lists (msla) + config-group devices/profiles/features
 MAX_FILE = 512 * 1024 * 1024          # per file, uncompressed
 MAX_TOTAL = 2 * 1024 * 1024 * 1024    # whole bundle, uncompressed
 _SAFE_NAME = re.compile(r"^(manifest\.json|README\.txt|raw/[A-Za-z0-9_.-]+\.json)$")

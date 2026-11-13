@@ -21,6 +21,41 @@ LOCK = threading.Lock()
 COLLECTOR_PHASES = ["Secure login", "Fabric-wide data", "Per-device data", "Templates", "Packaging"]
 ASSESSOR_PHASES = ["Secure login", "Fabric-wide data", "Per-device data", "Templates", "Checks & scoring"]
 SPAN = [(0, 3), (3, 35), (35, 85), (85, 95), (95, 100)]  # share of the overall ring per phase (start %, end %)
+
+# Collector / tool release history, newest first. Bump collector_app/VERSION to CHANGELOG[0][0] whenever
+# a collection data set is added (tests enforce that endpoints.collection_count() and the version stay in step).
+CHANGELOG: list[tuple[str, str, int, list[str]]] = [  # (version, date, endpoint count, what's new)
+    ("1.5.0", "2026-11-13", 94, [
+        "Configuration groups in depth: devices per group (System IP, hostname, site), every feature profile with its "
+        "features and settings (fixed / variable / default), CLI add-on text (/v1/config-group/{id}/device/associate, "
+        "/v1/feature-profile/.../{id}?details=true and per-feature reads).",
+        "Stronger redaction for configuration-group secrets (passwords, pre-shared keys, SNMP communities).",
+        "Collector counts now include per-device and per-template data sets."]),
+    ("1.4.0", "2026-11-13", 73, [
+        "Full licensing collection: licence level per device and hardware model, term/billing, start/end dates, "
+        "compliance status, HSEC (/msla/devices).",
+        "Licence pools per Smart / Virtual Account: owned vs in use (/msla/licenses).",
+        "Licence distribution per licence level (/msla/monitoring/licensedDistributionDetails).",
+        "Version badge and this release history on the collector and tool pages."]),
+    ("1.3.1", "2026-11-12", 0, [
+        "Renamed to sdwan-health-check-collector; web pages with demo screenshots.",
+        "Live progress page shared by the collector and the tool; stricter redaction."]),
+]
+VERSION = CHANGELOG[0][0]
+
+
+def history_html(version: str = VERSION) -> str:
+    """Version badge (top) and a 'What's new' history button (bottom). Pure HTML/CSS, no JavaScript."""
+    items = "".join(f"<li><b>v{html.escape(v)}</b> <span style='opacity:.6'>{html.escape(d)}</span><ul>"
+                    + "".join(f"<li>{html.escape(x)}</li>" for x in notes) + "</ul></li>" for v, d, _, notes in CHANGELOG)
+    return (f"<details class=history style='margin:28px 0 8px;font-size:13px'><summary style='cursor:pointer;display:inline-block;"
+            f"padding:6px 14px;border:1px solid currentColor;border-radius:999px;opacity:.8'>What's new · history (v{html.escape(version)})"
+            f"</summary><ul style='margin-top:10px;line-height:1.5'>{items}</ul></details>")
+
+
+def version_badge(version: str = VERSION) -> str:
+    return (f"<span class=verbadge style='font-size:12px;padding:2px 10px;border:1px solid currentColor;border-radius:999px;"
+            f"opacity:.75;margin-left:10px;vertical-align:middle;text-transform:none;letter-spacing:0;font-weight:400'>v{html.escape(version)}</span>")
 # messages that start each phase (both apps log these exact phrases)
 PHASE_MARKERS = [("Logging in", 0), ("Logged in", 1), ("devices found", 2), ("Reading", 3), ("Collected", 4)]
 
@@ -182,11 +217,11 @@ def page(title: str, body: str, version: str = "", refresh: bool = False, script
     """Full HTML page. `title` like 'SD-WAN Collector': the last word is highlighted."""
     meta = '<noscript><meta http-equiv="refresh" content="2"></noscript>' if refresh else ""
     first, _, last = html.escape(title).rpartition(" ")
-    ver = f" · v{html.escape(version)}" if version else ""
     return (f"<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>{meta}"
             f"<title>{html.escape(title)}</title><style>{CSS}</style></head>"
-            f"<body><div class=wrap><h1>{first} <b>{last}</b></h1><div class=sub><i>●</i> {html.escape(sub)}{ver}</div>"
-            f"{body}</div>{script}</body></html>").encode()
+            f"<body><div class=wrap><h1>{first} <b>{last}</b>{version_badge(version) if version else ''}</h1>"
+            f"<div class=sub><i>●</i> {html.escape(sub)}</div>"
+            f"{body}{history_html(version) if version else ''}</div>{script}</body></html>").encode()
 
 
 def connection_fields() -> str:
